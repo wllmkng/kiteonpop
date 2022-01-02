@@ -1,0 +1,217 @@
+#include "xlog/xlog.h"
+#include "pop_api.h"
+#include "parser.h"
+#include "myfib.h"
+#include "utils.h"
+#include "route.h"
+
+#include <time.h>
+
+#define NDN_TYPE_INTEREST 0x01
+#define NDN_TYPE_DATA 0x02
+#define NDN_TYPE_TRACEDATA 0x03
+
+/*TODO 计算名字对应的哈希*/
+uint8_t calc_hash(NAME_COMPONENT name)
+{
+    char tmp1[10] = "rv";
+    char tmp2[10] = "alice";
+    BOOL flag1 = False;
+    BOOL flag2 = False;
+    if(name.len!=2&&name.len!=5)
+    {
+        return 0;
+    }
+    for(int i=0;i<name.len;i++)
+    {
+        if(i<2 && name.value[i]==tmp1[i])
+        {
+            flag1 = True;
+            continue;
+        }
+        else
+        {
+            flag1 = False;
+            break;
+        }
+    }
+    for(int i=0;i<name.len;i++)
+    {
+        if(i<5 && name.value[i]==tmp2[i])
+        {
+            flag2 = True;
+            continue;
+        }
+        else
+        {
+            flag2 = False;
+            break;
+        }
+    }
+    if(flag1)
+    {
+        return 0x20;
+    }
+    if(flag2)
+    {   
+        return 0x04;
+    }
+    return 0;
+}
+
+void init_f(struct map *env)
+{
+    xinfo("f init\n");
+}
+
+struct route *f(struct packet *pkt, struct map *env)
+{
+    struct route *r = NULL;
+
+    struct entity *esw = read_packet_inswitch(pkt);
+    xinfo("KITE packet received\n");
+    entity_print(esw);
+    /*
+    uint64_t dst = value_to_48(read_packet(pkt, "dl_dst"));
+    uint64_t src = value_to_48(read_packet(pkt, "dl_src"));
+    xinfo("KITE dl_dst: %x\n", dst);
+    xinfo("KITE dl_src: %x\n", src);
+    */
+
+    /* inspect network header */
+    pull_header(pkt);
+    xinfo("KITE read ethernet head\n");
+    /* call handler */
+    if (strcmp(read_header_type(pkt), "spof") == 0)
+    {
+        xinfo("KITE spof\n");
+    }
+    else
+    {
+        xinfo("KITE unknown\n");
+        xinfo("KITE unknown protocol: %s.\n", read_header_type(pkt));
+        push_header(pkt);
+        r = route();
+        return r;
+    }
+
+    if (test_equal(pkt, "type", value_from_8(NDN_TYPE_TRACEDATA))) //是TraceData
+    {
+
+        /*DONE KITE处理TD：
+               提取追踪标签
+               将名字和接口信息保存起来
+        */
+        // data：指向一个DATA包的开头
+        // esw：提交PacketIn的交换机
+        // port：POF交换机上有状态转发模块从PIT中找到的转发端口
+        // FIXME 应从NDN前置头中提取这些信息
+        int length;
+        uint8_t *data = read_payload(pkt, &length);
+        int port = value_to_32(read_packet(pkt, "data_out_ports"));
+        //从DATA包中读取所有的名字
+        NAMES names;
+        uint32_t len = 0; //处理的总字节数，在读取数据包内容的函数调用过程中传递，data+len始终指向当前待处理的位置
+        if (!extract_name_from_data(data, &names, &len))
+        {
+            //错误
+            r = route();
+            return r; //返回空路径
+        }
+        //查找是否含有追踪标签
+        int trace_tag_index;
+        if ((trace_tag_index = find_trace_tag(names)) < 0)
+        {
+            //未找到追踪标签
+            //跳出
+            r = route();
+            return r; //返回空路径
+        }
+        //提取追踪前缀并保存
+        NAMES trace_prefix;
+        extract_trace_prefix(names, &trace_prefix);
+        /*
+        //用"myfib"+交换机id作为该交换机FIB表的索引
+        char *fibkey = malloc(sizeof(char) * 20);
+        strncpy(fibkey, "myfib", 5);
+        char *eswid = int_to_str(entity_get_dpid(esw));
+        strncpy(fibkey + 5, eswid, strlen(eswid) + 1);
+        free(eswid);
+        //将FIB表项添加到env中
+        // FIXME 是否会影响流表
+        int_or_ptr_t myfib;
+        myfib = map_read(env, PTR(fibkey));
+        if (myfib.p == NULL)
+        {
+            MYFIB *n_myfib = malloc(sizeof(MYFIB));
+            n_myfib->esw = esw;
+            n_myfib->eswid = entity_get_dpid(esw);
+            myfib_add_entry((MYFIB *)n_myfib, trace_prefix, port, time(NULL));
+            map_add_key(env, PTR(fibkey), PTR(n_myfib), eq_myfib_f, free_myfib_f);
+        }
+        else
+        {
+            ((MYFIB *)(myfib.p))->esw = esw;
+            ((MYFIB *)(myfib.p))->eswid = entity_get_dpid(esw);
+            myfib_add_entry((MYFIB *)(myfib.p), trace_prefix, port, time(NULL));
+        }
+        //释放内存
+        free(fibkey);
+        */
+
+        int_or_ptr_t atp = map_read(env, PTR("all_trace_prefix"));
+        if (atp.p == NULL)
+        {
+            ALL_TRACE_PREFIX *n_atp = all_tp();
+            all_tp_addtp(n_atp, trace_prefix);
+            map_add_key(env, PTR("all_trace_prefix"), PTR(n_atp), eq_atp_f, free_atp_f);
+        }
+        else
+        {
+            BOOL flag = True;
+            ALL_TRACE_PREFIX *f_atp = (ALL_TRACE_PREFIX *)(atp.p);
+            for (int i = 0; i < f_atp->num; i++)
+            {
+                if (eq_names(trace_prefix, f_atp->names[i]))
+                {
+                    flag = False;
+                    break;
+                }
+            }
+            if (flag)
+            {
+                all_tp_addtp(f_atp, trace_prefix);
+            }
+        }
+        char kitefibkey[1024];
+        memcpy(kitefibkey, "kitefib:", strlen("kitefib:"));
+        name_to_str(trace_prefix, kitefibkey + strlen("kitefib:"));
+        int_or_ptr_t kitefib;
+        kitefib = map_read(env, PTR(kitefibkey));
+        if (kitefib.p == NULL)
+        {
+            KITEFIB *n_kfib = malloc(sizeof(KITEFIB));
+            n_kfib->trace_prefix = trace_prefix;
+            kitefib_add_entry(n_kfib, esw, trace_prefix, port, time(NULL));
+            map_add_key(env, PTR(kitefibkey), PTR(n_kfib), eq_kitefib_f, free_kitefib_f);
+        }
+        else
+        {
+            kitefib_add_entry((KITEFIB *)(kitefib.p), esw, trace_prefix, port, time(NULL));
+        }
+
+        //释放内存
+        free_names(&names);
+        return r;
+    }
+    else if (test_equal(pkt, "type", value_from_8(NDN_TYPE_INTEREST)))
+    {
+        /*TODO 根据消费者Interest生成FIB表项：
+            将Interest名字与保存的TD信息中的名字对比
+            匹配后找到对应的TD信息中的接口
+
+        */
+
+        return r;
+    }
+}
