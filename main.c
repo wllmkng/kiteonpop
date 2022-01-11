@@ -12,7 +12,9 @@
 #define NDN_TYPE_DATA 0x02
 #define NDN_TYPE_TRACEDATA 0x03
 
-/*TODO 计算名字对应的哈希*/
+#define ENTRY_LIFETIME 10
+
+/*DONE 计算名字对应的哈希*/
 uint8_t calc_hash(NAME_COMPONENT name)
 {
     uint8_t hash = calc_hash_cpp(name.value, name.len);
@@ -20,7 +22,7 @@ uint8_t calc_hash(NAME_COMPONENT name)
     return hash;
 }
 
-/*WORKING 匹配数据包中的字段，寻找是否与某个保存过的追踪前缀相符*/
+/*DONE 匹配数据包中的字段，寻找是否与某个保存过的追踪前缀相符*/
 BOOL match_trace_prefix(struct packet *pkt, struct map *env, ALL_TRACE_PREFIX *atp, NAMES *trace_prefix)
 {
     char field_names[16][12];
@@ -76,10 +78,37 @@ struct route *kite_gen_trace_route(struct packet *pkt, struct map *env, KITEFIB 
             continue;
         }
         MYFIB_ENTRY *me = myfib->head;
+        MYFIB_ENTRY *pre_me = NULL;
         while (me)
         {
+            if(time(NULL)-me->time>ENTRY_LIFETIME)
+            {
+                char tmp_name[256];
+                //DONE: evict fib entry
+                if(pre_me == NULL) //first myfib entry to evict
+                {
+                    myfib->head = me->next;
+                    name_to_str(me->names, tmp_name);
+                    xinfo("KITE fib entry [%s, %d, %d] on esw with id [%d] has been evicted\n", tmp_name, me->port, me->time, myfib->eswid);
+                    free_names(&(me->names));
+                    pre_me = me;
+                    me = myfib->head;
+                    free(pre_me);
+                    pre_me = NULL;
+                    continue;
+                }
+                pre_me->next = me->next;
+                xinfo("KITE fib entry [%s, %d, %d] on esw with id [%d] has been evicted\n", tmp_name, me->port, me->time, myfib->eswid);
+                free_names(&(me->names));
+                free(me);
+                me = me->next;
+                continue;
+            }
+            //FIXME: 如何生成路径中的边
+            //以下方案在多跳时收到Interest能够生成流表下发，Interest被正常转发，但是随后POF控制器崩溃
+            //error info: controller: packet_parser.c:654: packet_parser_pull_return_lengthfield: Assertion `0' failed.
             int out_port = me->port; //该交换机的出端口号
-            /*
+            
             struct entity *out_esw;  //应发送到的entity
             int out_esw_in_port;     // out_esw的入端口号
             int n;
@@ -100,14 +129,18 @@ struct route *kite_gen_trace_route(struct packet *pkt, struct map *env, KITEFIB 
             }
             if (flag)
             {
-                route_add_edge(r, edge(NULL, 0, esw, out_port)); //在路径中添加一条边
-                xinfo("KITE route ((%d,%d)->(%d,%d)) added\n", 0, 0, entity_get_dpid(esw), out_port);
-                route_add_edge(r, edge(esw, out_port, out_esw, out_esw_in_port)); //在路径中添加一条边
-                xinfo("KITE route ((%d,%d)->(%d,%d)) added\n", entity_get_dpid(esw), out_port, entity_get_dpid(out_esw), out_esw_in_port);
+                route_add_edge(r, edge(esw, out_port, 0, 0)); //在路径中添加一条边
+                xinfo("KITE route ((%d,%d)->(%d,%d)) added\n", entity_get_dpid(esw), out_port, 0, 0);
+                route_add_edge(r, edge(0, 0, out_esw, out_esw_in_port));
+                xinfo("KITE route ((%d,%d)->(%d,%d)) added\n", 0, 0, entity_get_dpid(out_esw), out_esw_in_port);
+                
             }
-            */
-            route_add_edge(r, edge(esw, out_port, NULL, 0)); //在路径中添加一条边
-            xinfo("KITE route ((%d,%d)->(%d,%d)) added\n", entity_get_dpid(esw), out_port, 0, 0);
+            else
+            {
+                route_add_edge(r, edge(esw, out_port, NULL, 0)); //在路径中添加一条边
+                xinfo("KITE route ((%d,%d)->(%d,%d)) added\n", entity_get_dpid(esw), out_port, 0, 0);
+            }
+            pre_me = me;
             me = me->next;
         }
         ke = ke->next;
@@ -160,7 +193,7 @@ struct route *f(struct packet *pkt, struct map *env)
         // data：指向一个DATA包的开头
         // esw：提交PacketIn的交换机
         // port：POF交换机上有状态转发模块从PIT中找到的转发端口
-        // FIXME 应从NDN前置头中提取这些信息
+        // 从NDN前置头中提取这些信息
         int length;
         //xinfo("KITE test -1\n");
         uint8_t *data = read_payload(pkt, &length);
@@ -321,14 +354,13 @@ struct route *f(struct packet *pkt, struct map *env)
     }
     else if (test_equal(pkt, "type", value_from_8(NDN_TYPE_INTEREST)))
     {
-        /*TODO 根据消费者Interest生成路径：
+        /*DONE 根据消费者Interest生成路径：
             将Interest名字与保存的TD信息中的名字对比
             匹配后找到对应的TD信息中的接口
-
         */
         int_or_ptr_t atp = map_read(env, PTR("all_trace_prefix"));
         NAMES trace_prefix;
-        if (!match_trace_prefix(pkt, env, (ALL_TRACE_PREFIX *)(atp.p), &trace_prefix)) //没有跟当前兴趣包名字符合的追踪前缀
+        if (atp.p==NULL||!match_trace_prefix(pkt, env, (ALL_TRACE_PREFIX *)(atp.p), &trace_prefix)) //没有跟当前兴趣包名字符合的追踪前缀
         {
             r = route();
             return r;

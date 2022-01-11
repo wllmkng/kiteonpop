@@ -109,13 +109,13 @@ void myfib_add_entry(MYFIB *myfib, NAMES *names, int port, uint64_t time)
     {
         old->port = port;
         old->time = time;
-        for(int i=0;i<old->names.num;i++)
+        for (int i = 0; i < old->names.num; i++)
         {
-            if(names->names[i].value!=old->names.names[i].value)
+            if (names->names[i].value != old->names.names[i].value)
             {
                 free(names->names[i].value);
             }
-            names->names[i].value = old->names.names[i].value; 
+            names->names[i].value = old->names.names[i].value;
         }
         old->names = *names;
         free(n);
@@ -157,7 +157,7 @@ void free_kitefib_f(int_or_ptr_t k)
 
 typedef struct
 {
-    uint32_t num; // trace_prefix的个数
+    uint32_t num;     // trace_prefix的个数
     NAMES names[256]; //数组，保存所有的trace_prefix
 } ALL_TRACE_PREFIX;
 
@@ -165,12 +165,25 @@ ALL_TRACE_PREFIX *all_tp()
 {
     ALL_TRACE_PREFIX *atp = malloc(sizeof(ALL_TRACE_PREFIX));
     atp->num = 0;
+    for (int i = 0; i < 256; i++)
+    {
+        atp->names[i].names = NULL;
+        atp->names[i].num = 0;
+    }
     return atp;
 }
 void all_tp_addtp(ALL_TRACE_PREFIX *atp, NAMES names)
 {
-    atp->names[atp->num] = names;
+    for (int i = 0; i < names.num; i++)
+    {
+        atp->names[atp->num].num += 1;
+        atp->names[atp->num].names = (NAME_COMPONENT *)realloc(atp->names[atp->num].names, sizeof(NAME_COMPONENT) * atp->names[atp->num].num); //重新分配空间
+        atp->names[atp->num].names[i] = names.names[i];
+        atp->names[atp->num].names[i].value = malloc(sizeof(uint8_t) * names.names[i].len);
+        memcpy(atp->names[atp->num].names[i].value, names.names[i].value, names.names[i].len); //复制内存
+    }
     atp->num++;
+    xinfo("KITE test all_tp_addtp\n");
 }
 bool eq_atp_f(int_or_ptr_t a1, int_or_ptr_t a2)
 {
@@ -178,6 +191,10 @@ bool eq_atp_f(int_or_ptr_t a1, int_or_ptr_t a2)
 }
 void free_atp_f(int_or_ptr_t a)
 {
+    for (int i = 0; i < ((ALL_TRACE_PREFIX *)(a.p))->num; i++)
+    {
+        free_names(&(((ALL_TRACE_PREFIX *)(a.p))->names[i]));
+    }
     free(a.p);
 }
 
@@ -223,6 +240,5 @@ void kitefib_add_entry(KITEFIB *kitefib, struct entity *esw, NAMES *names, int p
 }
 
 /**/
-
 
 #endif
