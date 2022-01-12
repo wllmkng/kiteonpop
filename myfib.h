@@ -7,6 +7,7 @@
 typedef struct MYFIB_ENTRY
 {
     NAMES names;              //名字
+    int in_port;              //进入端口
     int port;                 //端口
     struct MYFIB_ENTRY *next; //链表下一项
     uint64_t time;            //时间戳
@@ -97,16 +98,18 @@ MYFIB_ENTRY *myfib_find_entry_by_name(MYFIB *myfib, NAMES names, BOOL *full_matc
 }
 
 /*在指定交换机的FIB表中添加一项*/
-void myfib_add_entry(MYFIB *myfib, NAMES *names, int port, uint64_t time)
+void myfib_add_entry(MYFIB *myfib, NAMES *names, int in_port, int port, uint64_t time)
 {
     MYFIB_ENTRY *n = malloc(sizeof(MYFIB_ENTRY));
     n->names = *names;
+    n->in_port = in_port;
     n->port = port;
     n->time = time;
     BOOL full_match;
     MYFIB_ENTRY *old = myfib_find_entry_by_name(myfib, *names, &full_match);
     if (old != NULL && eq_myfib_entry(*n, *old)) //如果有相同的项就替换
     {
+        old->in_port = in_port;
         old->port = port;
         old->time = time;
         for (int i = 0; i < old->names.num; i++)
@@ -208,7 +211,7 @@ KITEFIB *nw_kitefib(NAMES trace_prefix)
 }
 
 /*向指定KITE FIB表中添加一个FIB表项*/
-void kitefib_add_entry(KITEFIB *kitefib, struct entity *esw, NAMES *names, int port, uint64_t time)
+void kitefib_add_entry(KITEFIB *kitefib, struct entity *esw, NAMES *names, int in_port, int port, uint64_t time)
 {
     KITEFIB_ENTRY *e = kitefib->head;
     //xinfo("KITE test 3.36\n");
@@ -229,13 +232,13 @@ void kitefib_add_entry(KITEFIB *kitefib, struct entity *esw, NAMES *names, int p
         n->esw = esw;
         n->eswid = entity_get_dpid(esw);
         n->myfib = myfib(esw);
-        myfib_add_entry(n->myfib, names, port, time);
+        myfib_add_entry(n->myfib, names, in_port, port, time);
         n->next = kitefib->head;
         kitefib->head = n;
     }
     else
     {
-        myfib_add_entry(e->myfib, names, port, time);
+        myfib_add_entry(e->myfib, names, in_port, port, time);
     }
 }
 

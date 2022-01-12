@@ -63,10 +63,10 @@ struct route *kite_gen_trace_route(struct packet *pkt, struct map *env, KITEFIB 
 {
     struct route *r = route();
     KITEFIB_ENTRY *ke = kitefib->head;
-    int in_port = read_packet_inport(pkt);
+    int pkt_in_port = read_packet_inport(pkt);
     struct entity *in_esw = read_packet_inswitch(pkt);
-    route_add_edge(r, edge(NULL, 0, in_esw, in_port)); //在路径中添加一条边
-    xinfo("KITE route ((%d,%d)->(%d,%d)) added\n", 0, 0, entity_get_dpid(in_esw), in_port);
+    route_add_edge(r, edge(NULL, 0, in_esw, pkt_in_port)); //在路径中添加一条边
+    xinfo("KITE route ((%d,%d)->(%d,%d)) added\n", 0, 0, entity_get_dpid(in_esw), pkt_in_port);
     while (ke)
     {
         MYFIB *myfib = ke->myfib;
@@ -81,11 +81,11 @@ struct route *kite_gen_trace_route(struct packet *pkt, struct map *env, KITEFIB 
         MYFIB_ENTRY *pre_me = NULL;
         while (me)
         {
-            if(time(NULL)-me->time>ENTRY_LIFETIME)
+            if (time(NULL) - me->time > ENTRY_LIFETIME)
             {
                 char tmp_name[256];
                 //DONE: evict fib entry
-                if(pre_me == NULL) //first myfib entry to evict
+                if (pre_me == NULL) //first myfib entry to evict
                 {
                     myfib->head = me->next;
                     name_to_str(me->names, tmp_name);
@@ -104,47 +104,23 @@ struct route *kite_gen_trace_route(struct packet *pkt, struct map *env, KITEFIB 
                 me = me->next;
                 continue;
             }
-            //FIXME: 如何生成路径中的边
-            //以下方案在多跳时收到Interest能够生成流表下发，Interest被正常转发，但是随后POF控制器崩溃
-            //error info: controller: packet_parser.c:654: packet_parser_pull_return_lengthfield: Assertion `0' failed.
+            int in_port = me->in_port;
             int out_port = me->port; //该交换机的出端口号
-            
-            struct entity *out_esw;  //应发送到的entity
-            int out_esw_in_port;     // out_esw的入端口号
-            int n;
-            BOOL flag = False;
-            
-            const struct entity_adj *adjs = get_entity_adjs(esw, &n);
-            //xinfo("KITE test adj_num=%d\n", n);
-            for (int i = 0; i < n; i++)
+
+            if(entity_get_dpid(esw)==entity_get_dpid(in_esw))
             {
-                //xinfo("KITE test adj\n");
-                if (adjs[i].out_port == out_port)
-                {
-                    out_esw = adjs[i].adj_entity;
-                    out_esw_in_port = adjs[i].adj_in_port;
-                    flag = True;
-                    break;
-                }
-            }
-            if (flag)
-            {
+                route_add_edge(r, edge(0, 0, esw, in_port)); //在路径中添加一条边
+                xinfo("KITE route ((%d,%d)->(%d,%d)) added\n", 0, 0, entity_get_dpid(esw), in_port);
                 route_add_edge(r, edge(esw, out_port, 0, 0)); //在路径中添加一条边
                 xinfo("KITE route ((%d,%d)->(%d,%d)) added\n", entity_get_dpid(esw), out_port, 0, 0);
-                route_add_edge(r, edge(0, 0, out_esw, out_esw_in_port));
-                xinfo("KITE route ((%d,%d)->(%d,%d)) added\n", 0, 0, entity_get_dpid(out_esw), out_esw_in_port);
-                
             }
-            else
-            {
-                route_add_edge(r, edge(esw, out_port, NULL, 0)); //在路径中添加一条边
-                xinfo("KITE route ((%d,%d)->(%d,%d)) added\n", entity_get_dpid(esw), out_port, 0, 0);
-            }
+
             pre_me = me;
             me = me->next;
         }
         ke = ke->next;
     }
+    push_header(pkt);
     return r;
 }
 
@@ -185,7 +161,6 @@ struct route *f(struct packet *pkt, struct map *env)
 
     if (test_equal(pkt, "type", value_from_8(NDN_TYPE_TRACEDATA))) //是TraceData
     {
-
         /*DONE KITE处理TD：
                提取追踪标签
                将名字和接口信息保存起来
@@ -198,6 +173,7 @@ struct route *f(struct packet *pkt, struct map *env)
         //xinfo("KITE test -1\n");
         uint8_t *data = read_payload(pkt, &length);
         //xinfo("KITE test 0\n");
+        int in_port = read_packet_inport(pkt);
         int port = value_to_32(read_packet(pkt, "data_out_ports"));
         port = big_to_native(&port, 4);
         //xinfo("KITE test 1\n");
@@ -287,14 +263,14 @@ struct route *f(struct packet *pkt, struct map *env)
             KITEFIB *n_kfib = nw_kitefib(trace_prefix);
             n_kfib->head = NULL;
             //xinfo("KITE test 3.35\n");
-            kitefib_add_entry(n_kfib, esw, &trace_prefix, port, time(NULL));
+            kitefib_add_entry(n_kfib, esw, &trace_prefix, in_port, port, time(NULL));
             //xinfo("KITE test 3.4\n");
             map_add_key(env, PTR(kitefibkey), PTR(n_kfib), eq_kitefib_f, free_kitefib_f);
             //xinfo("KITE test 3.41\n");
         }
         else
         {
-            kitefib_add_entry((KITEFIB *)(kitefib.p), esw, &trace_prefix, port, time(NULL));
+            kitefib_add_entry((KITEFIB *)(kitefib.p), esw, &trace_prefix, in_port, port, time(NULL));
         }
 
         //test start
@@ -327,7 +303,7 @@ struct route *f(struct packet *pkt, struct map *env)
                         MYFIB_ENTRY *me = myfib->head;
                         while (me)
                         {
-                            xinfo("KITE FIB ENTRY\neswid: %d\nport: %d\ntime: %lld\n", myfib->eswid, me->port, me->time);
+                            xinfo("KITE FIB ENTRY\neswid: %d\nin_port:%d\nport: %d\ntime: %lld\n", myfib->eswid, me->in_port, me->port, me->time);
                             me = me->next;
                         }
                         ke = ke->next;
@@ -350,6 +326,12 @@ struct route *f(struct packet *pkt, struct map *env)
         free_names(&names);
         //xinfo("KITE test 7\n");
         r = route();
+        /*
+        //for test
+        route_add_edge(r, edge(0, 0, esw, in_port));
+        route_add_edge(r, edge(esw, port, 0, 0));
+        push_header(pkt);
+        */
         return r;
     }
     else if (test_equal(pkt, "type", value_from_8(NDN_TYPE_INTEREST)))
@@ -360,7 +342,7 @@ struct route *f(struct packet *pkt, struct map *env)
         */
         int_or_ptr_t atp = map_read(env, PTR("all_trace_prefix"));
         NAMES trace_prefix;
-        if (atp.p==NULL||!match_trace_prefix(pkt, env, (ALL_TRACE_PREFIX *)(atp.p), &trace_prefix)) //没有跟当前兴趣包名字符合的追踪前缀
+        if (atp.p == NULL || !match_trace_prefix(pkt, env, (ALL_TRACE_PREFIX *)(atp.p), &trace_prefix)) //没有跟当前兴趣包名字符合的追踪前缀
         {
             r = route();
             return r;
